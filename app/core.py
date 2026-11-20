@@ -416,8 +416,210 @@ def milestone_2(corpus_input: str | list[str] | None = None, n: int = 3, k: floa
 
 # --- Milestone 3: Implement dialogue generation logic using the model.
 # Hint: Probabilistic word sampling for sequence generation.
-def milestone_3():  # TODO(milestone 3)
-    raise NotImplementedError("TODO(milestone 3)")
+
+def sample_next_token(
+    probs: dict[str, float],
+    temperature: float = 1.0,
+    top_k: int | None = None,
+    top_p: float | None = None,
+    disallow_eos: bool = False,
+    rng: random.Random | None = None,
+) -> str:
+    """Sample the next token from probabilities with temperature, top-k, and top-p filtering."""
+    if rng is None:
+        rng = random
+
+    filtered = dict(probs)
+    if disallow_eos and EOS in filtered:
+        filtered.pop(EOS)
+
+    # Disallow UNK from generation if possible
+    if UNK in filtered and len(filtered) > 1:
+        filtered.pop(UNK)
+
+    if not filtered:
+        return EOS
+
+    words = list(filtered.keys())
+    raw_probs = [filtered[w] for w in words]
+
+    # Greedy choice if temperature is 0
+    if temperature <= 0.0:
+        max_idx = max(range(len(raw_probs)), key=lambda i: raw_probs[i])
+        return words[max_idx]
+
+    # Temperature scaling: P_new ~ P^(1/T)
+    inv_t = 1.0 / max(temperature, 1e-4)
+    scaled = [p ** inv_t for p in raw_probs]
+    total_scaled = sum(scaled)
+    if total_scaled <= 0:
+        return rng.choice(words)
+    p_norm = [s / total_scaled for s in scaled]
+
+    # Combine words and normalized probabilities and sort descending
+    sorted_pairs = sorted(zip(words, p_norm), key=lambda x: x[1], reverse=True)
+
+    # Apply Top-k filtering
+    if top_k is not None and top_k > 0:
+        sorted_pairs = sorted_pairs[:top_k]
+
+    # Apply Top-p (nucleus) filtering
+    if top_p is not None and 0.0 < top_p < 1.0:
+        cumulative = 0.0
+        cutoff_idx = 0
+        for idx, (_, prob) in enumerate(sorted_pairs):
+            cumulative += prob
+            cutoff_idx = idx
+            if cumulative >= top_p:
+                break
+        sorted_pairs = sorted_pairs[: cutoff_idx + 1]
+
+    candidates = [pair[0] for pair in sorted_pairs]
+    weights = [pair[1] for pair in sorted_pairs]
+    total_w = sum(weights)
+    if total_w <= 0:
+        return candidates[0]
+    normalized_weights = [w / total_w for w in weights]
+
+    return rng.choices(candidates, weights=normalized_weights, k=1)[0]
+
+
+def generate_sequence(
+    model: NGramModel,
+    prompt: str = "",
+    max_length: int = 25,
+    min_length: int = 3,
+    temperature: float = 0.8,
+    top_k: int | None = 20,
+    top_p: float | None = 0.9,
+    seed: int | None = None,
+) -> list[str]:
+    """Autoregressively generate a sequence of tokens from a prompt using the n-gram model."""
+    rng = random.Random(seed) if seed is not None else random.Random()
+    
+    prompt_tokens = tokenize(prompt) if prompt.strip() else []
+    # Seed history with BOS padding
+    history = [BOS] * (model.n - 1) + prompt_tokens
+    generated_tokens = list(prompt_tokens)
+
+    for step in range(max_length):
+        context = tuple(history[-(model.n - 1):]) if model.n > 1 else ()
+        probs = model.get_next_word_probabilities(context)
+        
+        disallow_eos = len(generated_tokens) < min_length
+        next_token = sample_next_token(
+            probs,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            disallow_eos=disallow_eos,
+            rng=rng,
+        )
+
+        if next_token == EOS:
+            break
+
+        generated_tokens.append(next_token)
+        history.append(next_token)
+
+        # Stop if sentence has ended with punctuation and reached min_length
+        if len(generated_tokens) >= min_length and next_token in (".", "!", "?"):
+            break
+
+    return generated_tokens
+
+
+def generate_dialogue(
+    model: NGramModel,
+    prompt: str = "",
+    max_length: int = 25,
+    min_length: int = 3,
+    temperature: float = 0.8,
+    top_k: int | None = 20,
+    top_p: float | None = 0.9,
+    num_samples: int = 1,
+    seed: int | None = None,
+    save_path: str | Path | None = None,
+) -> str | list[str]:
+    """Generate coherent game dialogue snippet(s) for NPCs.
+    
+    Supports:
+    - Custom prompt phrase
+    - Configurable length (max_length, min_length)
+    - Multiple alternative snippets (num_samples > 1)
+    - Saving generated dialogue to a text file (save_path)
+    """
+    snippets: list[str] = []
+    base_seed = seed if seed is not None else random.randint(0, 1000000)
+
+    for i in range(max(1, num_samples)):
+        sample_seed = base_seed + i if seed is not None else None
+        tokens = generate_sequence(
+            model=model,
+            prompt=prompt,
+            max_length=max_length,
+            min_length=min_length,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            seed=sample_seed,
+        )
+        text = detokenize(tokens)
+        snippets.append(text)
+
+    # Save to file if path provided
+    if save_path:
+        out_file = Path(save_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        content = "\n\n".join(
+            f"Snippet {idx + 1}:\n{s}" if len(snippets) > 1 else s
+            for idx, s in enumerate(snippets)
+        )
+        out_file.write_text(content, encoding="utf-8")
+
+    return snippets if num_samples > 1 else snippets[0]
+
+
+def milestone_3(
+    model: NGramModel | None = None,
+    prompt: str = "Halt",
+    max_length: int = 20,
+    num_samples: int = 3,
+    seed: int = 42,
+) -> dict:
+    """Milestone 3: Implement dialogue generation logic using the model.
+    
+    Returns generated single snippet and multiple alternative snippets.
+    """
+    if model is None:
+        m2 = milestone_2(n=3, k=0.5)
+        model = m2["model"]
+
+    # Generate single snippet
+    single_snippet = generate_dialogue(
+        model=model,
+        prompt=prompt,
+        max_length=max_length,
+        num_samples=1,
+        seed=seed,
+    )
+
+    # Generate multiple alternative snippets (Stretch idea)
+    alternatives = generate_dialogue(
+        model=model,
+        prompt=prompt,
+        max_length=max_length,
+        num_samples=num_samples,
+        seed=seed,
+    )
+
+    return {
+        "model": model,
+        "prompt": prompt,
+        "single_snippet": single_snippet,
+        "alternatives": alternatives,
+        "num_alternatives": len(alternatives) if isinstance(alternatives, list) else 1,
+    }
 
 
 # --- Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.

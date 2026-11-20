@@ -73,9 +73,32 @@ def test_milestone_2(tmp_path):
 
 
 # Milestone 3: Implement dialogue generation logic using the model.
-@pytest.mark.skip(reason="remove this line when you start milestone 3")
-def test_milestone_3():
-    raise NotImplementedError("write the test for milestone 3")
+def test_milestone_3(tmp_path):
+    res = core.milestone_3(prompt="Halt", max_length=20, num_samples=3, seed=42)
+    assert isinstance(res, dict)
+    assert "single_snippet" in res
+    assert "alternatives" in res
+    assert isinstance(res["alternatives"], list)
+    assert len(res["alternatives"]) == 3
+    
+    snippet = res["single_snippet"]
+    assert isinstance(snippet, str)
+    assert snippet.startswith("Halt")
+    assert len(snippet.split()) >= 2
+
+    # Test length control and temperature
+    model = res["model"]
+    short_dialogue = core.generate_dialogue(model, prompt="Welcome", max_length=5, min_length=2, seed=123)
+    assert isinstance(short_dialogue, str)
+    assert short_dialogue.startswith("Welcome")
+
+    # Test saving to text file (Stretch idea)
+    save_file = tmp_path / "dialogue_output.txt"
+    core.generate_dialogue(model, prompt="The arcane", max_length=15, num_samples=2, save_path=save_file)
+    assert save_file.exists()
+    content = save_file.read_text(encoding="utf-8")
+    assert "The arcane" in content
+    assert "Snippet 1:" in content
 
 
 # Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.

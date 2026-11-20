@@ -18,7 +18,7 @@ Tick these off as you go, and commit after each one.
       Hint: Corpus preprocessing and tokenization.
 - [x] **2. Build the n-gram language model with smoothing.**  
       Hint: N-gram counting and probability calculation with smoothing.
-- [ ] **3. Implement dialogue generation logic using the model.**  
+- [x] **3. Implement dialogue generation logic using the model.**  
       Hint: Probabilistic word sampling for sequence generation.
 - [ ] **4. Design a CLI where users can input a starting phrase and generate dialogue.**  
       Hint: Command-line argument parsing and output formatting.
