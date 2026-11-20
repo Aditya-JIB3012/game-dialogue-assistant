@@ -16,7 +16,7 @@ Tick these off as you go, and commit after each one.
 
 - [x] **1. Collect and preprocess a corpus of game dialogues.**  
       Hint: Corpus preprocessing and tokenization.
-- [ ] **2. Build the n-gram language model with smoothing.**  
+- [x] **2. Build the n-gram language model with smoothing.**  
       Hint: N-gram counting and probability calculation with smoothing.
 - [ ] **3. Implement dialogue generation logic using the model.**  
       Hint: Probabilistic word sampling for sequence generation.

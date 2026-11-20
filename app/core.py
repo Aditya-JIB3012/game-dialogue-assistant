@@ -1,6 +1,7 @@
 """Game Dialogue Assistant - Core functionality for n-gram language modeling and dialogue generation."""
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
@@ -87,7 +88,6 @@ def clean_dialogue_line(line: str) -> str:
     line = line.strip()
     if ":" in line:
         parts = line.split(":", 1)
-        # Keep dialogue content after speaker tag
         line = parts[1].strip()
     return line
 
@@ -96,7 +96,6 @@ def tokenize(text: str, lowercase: bool = True) -> list[str]:
     """Tokenize text into words and punctuation marks."""
     if lowercase:
         text = text.lower()
-    # Match words (including contractions like don't) and punctuation marks
     pattern = r"\w+(?:'\w+)?|[^\w\s]"
     tokens = re.findall(pattern, text)
     return tokens
@@ -106,7 +105,6 @@ def detokenize(tokens: list[str]) -> str:
     """Convert token list back into readable natural text with correct spacing and punctuation."""
     if not tokens:
         return ""
-    # Filter out special boundary tokens
     clean = [t for t in tokens if t not in (BOS, EOS, UNK)]
     if not clean:
         return ""
@@ -115,7 +113,7 @@ def detokenize(tokens: list[str]) -> str:
     attach_left = {".", ",", "!", "?", ";", ":", "'", "’", "n't", "')", "]", "}"}
     attach_right = {"(", "[", "{"}
     
-    for i, tok in enumerate(clean):
+    for tok in clean:
         if not out:
             out.append(tok.capitalize())
             continue
@@ -126,14 +124,12 @@ def detokenize(tokens: list[str]) -> str:
         elif prev in attach_right:
             out[-1] = prev + tok
         else:
-            # Capitalize if previous token ended a sentence
             if prev.endswith((".", "!", "?")):
                 out.append(tok.capitalize())
             else:
                 out.append(tok)
                 
     result = " ".join(out)
-    # Ensure final capitalization and punctuation
     if result and not result[-1] in ".!?":
         result += "."
     return result[0].upper() + result[1:] if result else ""
@@ -222,8 +218,200 @@ def milestone_1(corpus_input: str | list[str] | None = None, n: int = 3) -> dict
 
 # --- Milestone 2: Build the n-gram language model with smoothing.
 # Hint: N-gram counting and probability calculation with smoothing.
-def milestone_2():  # TODO(milestone 2)
-    raise NotImplementedError("TODO(milestone 2)")
+
+class NGramModel:
+    """N-gram language model supporting orders 1..N with Add-k (Laplace/Lidstone) smoothing and backoff."""
+
+    def __init__(self, n: int = 3, k: float = 1.0, backoff: bool = True):
+        if n < 1:
+            raise ValueError("n must be at least 1")
+        self.n = n
+        self.k = k
+        self.backoff = backoff
+        self.vocab: set[str] = set()
+        self.target_vocab: list[str] = []
+        # counts[order][context] -> Counter(word -> count)
+        # order ranges from 1 to n.
+        # For order 1 (unigram), context is empty tuple ()
+        self.counts: dict[int, dict[tuple[str, ...], Counter]] = {i: defaultdict(Counter) for i in range(1, n + 1)}
+        self.context_totals: dict[int, dict[tuple[str, ...], int]] = {i: defaultdict(int) for i in range(1, n + 1)}
+        self.total_words: int = 0
+
+    def train(self, tokenized_sentences: list[list[str]], vocab: set[str] | None = None) -> NGramModel:
+        """Count n-grams across all sentences in the corpus."""
+        if vocab is not None:
+            self.vocab = set(vocab)
+        else:
+            self.vocab = build_vocabulary(tokenized_sentences)
+        
+        # Target vocabulary: tokens that can be predicted (excludes BOS)
+        self.target_vocab = sorted(t for t in self.vocab if t != BOS)
+
+        # Count n-grams for every order from 1 up to self.n
+        for sentence in tokenized_sentences:
+            # Map tokens outside vocab to UNK
+            clean_seq = [tok if tok in self.vocab else UNK for tok in sentence]
+            for i, target in enumerate(clean_seq):
+                if target == BOS:
+                    continue  # BOS is never a predicted target
+                self.total_words += 1
+                # Record counts for unigram, bigram, ..., n-gram
+                for order in range(1, self.n + 1):
+                    ctx_len = order - 1
+                    if i >= ctx_len:
+                        context = tuple(clean_seq[i - ctx_len : i])
+                        self.counts[order][context][target] += 1
+                        self.context_totals[order][context] += 1
+        return self
+
+    def _resolve_context(self, context: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
+        """Trim context to at most (n - 1) tokens, and back off to shorter context if unseen."""
+        ctx = tuple(context[-(self.n - 1):]) if self.n > 1 else ()
+        
+        if not self.backoff:
+            order = len(ctx) + 1
+            return order, ctx
+
+        # If backoff is enabled, find highest order where context was seen
+        while len(ctx) > 0:
+            order = len(ctx) + 1
+            if self.context_totals[order].get(ctx, 0) > 0:
+                return order, ctx
+            ctx = ctx[1:]  # Back off by removing oldest token
+
+        return 1, ()
+
+    def get_probability(self, context: tuple[str, ...], word: str) -> float:
+        """Calculate P(word | context) using Add-k smoothing on resolved context."""
+        target = word if word in self.vocab else UNK
+        if target == BOS:
+            return 0.0
+
+        order, resolved_ctx = self._resolve_context(context)
+        v_size = len(self.target_vocab)
+        if v_size == 0:
+            return 0.0
+
+        ctx_count = self.context_totals[order].get(resolved_ctx, 0)
+        word_count = self.counts[order][resolved_ctx][target]
+
+        # Add-k smoothing formula: P = (C(ctx, w) + k) / (C(ctx) + k * |V|)
+        prob = (word_count + self.k) / (ctx_count + self.k * v_size)
+        return prob
+
+    def get_next_word_probabilities(self, context: tuple[str, ...]) -> dict[str, float]:
+        """Compute full probability distribution over target vocabulary for given context."""
+        order, resolved_ctx = self._resolve_context(context)
+        v_size = len(self.target_vocab)
+        ctx_count = self.context_totals[order].get(resolved_ctx, 0)
+        denom = ctx_count + self.k * v_size
+
+        probs: dict[str, float] = {}
+        for word in self.target_vocab:
+            word_count = self.counts[order][resolved_ctx][word]
+            probs[word] = (word_count + self.k) / denom
+        return probs
+
+    def perplexity(self, sentences: list[list[str]]) -> float:
+        """Calculate model perplexity on a list of test sentences."""
+        log_prob_sum = 0.0
+        word_count = 0
+
+        for sentence in sentences:
+            clean_seq = [tok if tok in self.vocab else UNK for tok in sentence]
+            for i, target in enumerate(clean_seq):
+                if target == BOS:
+                    continue
+                ctx = tuple(clean_seq[max(0, i - self.n + 1) : i])
+                prob = self.get_probability(ctx, target)
+                if prob <= 0.0:
+                    prob = 1e-12
+                log_prob_sum += math.log(prob)
+                word_count += 1
+
+        if word_count == 0:
+            return float("inf")
+        return math.exp(-log_prob_sum / word_count)
+
+    def to_dict(self) -> dict:
+        """Serialize model data to dictionary."""
+        serializable_counts: dict[str, dict[str, dict[str, int]]] = {}
+        serializable_totals: dict[str, dict[str, int]] = {}
+        for order in self.counts:
+            serializable_counts[str(order)] = {
+                " ".join(ctx): dict(word_counts) for ctx, word_counts in self.counts[order].items()
+            }
+            serializable_totals[str(order)] = {
+                " ".join(ctx): total for ctx, total in self.context_totals[order].items()
+            }
+        return {
+            "n": self.n,
+            "k": self.k,
+            "backoff": self.backoff,
+            "vocab": sorted(self.vocab),
+            "target_vocab": self.target_vocab,
+            "counts": serializable_counts,
+            "context_totals": serializable_totals,
+            "total_words": self.total_words,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> NGramModel:
+        """Deserialize model from dictionary."""
+        model = cls(n=data["n"], k=data["k"], backoff=data.get("backoff", True))
+        model.vocab = set(data["vocab"])
+        model.target_vocab = data["target_vocab"]
+        model.total_words = data.get("total_words", 0)
+        for order_str, ctx_map in data["counts"].items():
+            order = int(order_str)
+            for ctx_str, word_counts in ctx_map.items():
+                ctx = tuple(ctx_str.split()) if ctx_str else ()
+                model.counts[order][ctx] = Counter(word_counts)
+        for order_str, totals_map in data["context_totals"].items():
+            order = int(order_str)
+            for ctx_str, total in totals_map.items():
+                ctx = tuple(ctx_str.split()) if ctx_str else ()
+                model.context_totals[order][ctx] = total
+        return model
+
+    def save(self, filepath: str | Path) -> None:
+        """Save model JSON file."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, filepath: str | Path) -> NGramModel:
+        """Load model from JSON file."""
+        path = Path(filepath)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_dict(data)
+
+
+def milestone_2(corpus_input: str | list[str] | None = None, n: int = 3, k: float = 1.0) -> dict:
+    """Milestone 2: Build the n-gram language model with smoothing.
+    
+    Trains an n-gram model and returns model instance, perplexity, and probability checks.
+    """
+    m1 = milestone_1(corpus_input=corpus_input, n=n)
+    model = NGramModel(n=n, k=k)
+    model.train(m1["tokenized_sentences"], vocab=m1["vocab"])
+    
+    # Verify probability distribution sums to 1.0
+    sample_context = (BOS, BOS) if n >= 3 else (BOS,)
+    probs = model.get_next_word_probabilities(sample_context)
+    prob_sum = sum(probs.values())
+    
+    ppl = model.perplexity(m1["tokenized_sentences"])
+    
+    return {
+        "model": model,
+        "n": n,
+        "k": k,
+        "perplexity": ppl,
+        "prob_sum": prob_sum,
+        "vocab_size": len(model.vocab),
+    }
 
 
 # --- Milestone 3: Implement dialogue generation logic using the model.
