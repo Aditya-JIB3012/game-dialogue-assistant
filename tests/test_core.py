@@ -102,6 +102,34 @@ def test_milestone_3(tmp_path):
 
 
 # Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.
-@pytest.mark.skip(reason="remove this line when you start milestone 4")
-def test_milestone_4():
-    raise NotImplementedError("write the test for milestone 4")
+def test_milestone_4(capsys, tmp_path):
+    # 1. Test milestone_4 programmatic function
+    res = core.milestone_4(prompt="Halt", length=20, samples=2, seed=42)
+    assert isinstance(res, dict)
+    assert "prompt" in res
+    assert "snippets" in res
+    assert "formatted_output" in res
+    assert "GAME DIALOGUE ASSISTANT" in res["formatted_output"]
+    assert "Starting Prompt: \"Halt\"" in res["formatted_output"]
+
+    # 2. Test CLI generate command with prompt and stretch options (length, samples, save)
+    from app.cli import main
+    save_file = str(tmp_path / "cli_generated.txt")
+    main(["generate", "Welcome stranger", "--length", "15", "--samples", "2", "--save", save_file, "--seed", "99"])
+    out = capsys.readouterr().out
+    assert "GAME DIALOGUE ASSISTANT" in out
+    assert 'Starting Prompt: "Welcome stranger"' in out
+    assert "[1]" in out
+    assert "[2]" in out
+    assert f"Saved to: {save_file}" in out
+
+    # Verify saved file
+    assert (tmp_path / "cli_generated.txt").exists()
+    content = (tmp_path / "cli_generated.txt").read_text(encoding="utf-8")
+    assert "Welcome stranger" in content
+
+    # 3. Test CLI stats command
+    main(["stats"])
+    stats_out = capsys.readouterr().out
+    assert "Corpus Statistics:" in stats_out
+    assert "Dialogue lines:" in stats_out

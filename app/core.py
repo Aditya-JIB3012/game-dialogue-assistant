@@ -534,8 +534,8 @@ def generate_dialogue(
     prompt: str = "",
     max_length: int = 25,
     min_length: int = 3,
-    temperature: float = 0.8,
-    top_k: int | None = 20,
+    temperature: float = 0.7,
+    top_k: int | None = 10,
     top_p: float | None = 0.9,
     num_samples: int = 1,
     seed: int | None = None,
@@ -544,11 +544,19 @@ def generate_dialogue(
     """Generate coherent game dialogue snippet(s) for NPCs.
     
     Supports:
-    - Custom prompt phrase
+    - Custom prompt phrase (with optional speaker tag, e.g. 'Guard: Halt')
     - Configurable length (max_length, min_length)
     - Multiple alternative snippets (num_samples > 1)
     - Saving generated dialogue to a text file (save_path)
     """
+    speaker_prefix = ""
+    prompt_dialogue = prompt.strip()
+    if ":" in prompt_dialogue:
+        prefix, rest = prompt_dialogue.split(":", 1)
+        if rest.strip():
+            speaker_prefix = f"{prefix.strip()}: "
+            prompt_dialogue = rest.strip()
+
     snippets: list[str] = []
     base_seed = seed if seed is not None else random.randint(0, 1000000)
 
@@ -556,7 +564,7 @@ def generate_dialogue(
         sample_seed = base_seed + i if seed is not None else None
         tokens = generate_sequence(
             model=model,
-            prompt=prompt,
+            prompt=prompt_dialogue,
             max_length=max_length,
             min_length=min_length,
             temperature=temperature,
@@ -565,6 +573,8 @@ def generate_dialogue(
             seed=sample_seed,
         )
         text = detokenize(tokens)
+        if speaker_prefix:
+            text = f"{speaker_prefix}{text}"
         snippets.append(text)
 
     # Save to file if path provided
@@ -624,5 +634,70 @@ def milestone_3(
 
 # --- Milestone 4: Design a CLI where users can input a starting phrase and generate dialogue.
 # Hint: Command-line argument parsing and output formatting.
-def milestone_4():  # TODO(milestone 4)
-    raise NotImplementedError("TODO(milestone 4)")
+
+def milestone_4(
+    prompt: str = "Halt",
+    length: int = 25,
+    samples: int = 2,
+    corpus_file: str | None = None,
+    save_file: str | None = None,
+    temperature: float = 0.7,
+    seed: int | None = 42,
+) -> dict:
+    """Milestone 4: CLI pipeline for dialogue generation.
+    
+    Generates dialogue from a starting phrase with options for length, alternative
+    samples, and saving to text files.
+    """
+    if corpus_file and Path(corpus_file).exists():
+        corpus = Corpus.from_file(corpus_file, n=3)
+    else:
+        corpus = Corpus(n=3)
+
+    model = NGramModel(n=3, k=0.05)
+    model.train(corpus.tokenized_sentences, vocab=corpus.vocab)
+
+    snippets = generate_dialogue(
+        model=model,
+        prompt=prompt,
+        max_length=length,
+        num_samples=samples,
+        temperature=temperature,
+        seed=seed,
+        save_path=save_file,
+    )
+
+    formatted_output = format_cli_output(
+        prompt=prompt,
+        snippets=snippets if isinstance(snippets, list) else [snippets],
+        save_path=save_file,
+    )
+
+    return {
+        "prompt": prompt,
+        "snippets": snippets,
+        "formatted_output": formatted_output,
+        "saved_to": save_file,
+    }
+
+
+def format_cli_output(prompt: str, snippets: list[str], save_path: str | Path | None = None) -> str:
+    """Format dialogue snippets for command-line presentation."""
+    lines = [
+        "=" * 50,
+        "GAME DIALOGUE ASSISTANT",
+        "=" * 50,
+        f'Starting Prompt: "{prompt}"',
+        "-" * 50,
+    ]
+    if len(snippets) == 1:
+        lines.append(f"Generated Dialogue:\n  {snippets[0]}")
+    else:
+        lines.append(f"Generated Dialogue ({len(snippets)} alternatives):")
+        for idx, snippet in enumerate(snippets, start=1):
+            lines.append(f"  [{idx}] {snippet}")
+    
+    lines.append("-" * 50)
+    if save_path:
+        lines.append(f"Saved to: {save_path}")
+    return "\n".join(lines)
